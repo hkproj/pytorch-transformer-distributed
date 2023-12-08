@@ -6,6 +6,7 @@ import warnings
 from tqdm import tqdm
 import os
 from pathlib import Path
+import argparse
 
 # Huggingface datasets and tokenizers
 from datasets import load_dataset
@@ -257,8 +258,30 @@ def train_model(config):
 if __name__ == '__main__':
     warnings.filterwarnings("ignore")
     config = get_config()
-    config['num_epochs'] = 30
-    config['preload'] = None
+
+    # Read command line arguments and overwrite config accordingly
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument('--batch_size', type=int, default=config['batch_size'])
+    parser.add_argument('--num_epochs', type=int, default=config['num_epochs'])
+    parser.add_argument('--lr', type=float, default=config['lr'])
+    parser.add_argument('--seq_len', type=int, default=config['seq_len'])
+    parser.add_argument('--d_model', type=int, default=config['d_model'])
+    parser.add_argument('--lang_src', type=str, default=config['lang_src'])
+    parser.add_argument('--lang_tgt', type=str, default=config['lang_tgt'])
+    parser.add_argument('--model_folder', type=str, default=config['model_folder'])
+    parser.add_argument('--model_basename', type=str, default=config['model_basename'])
+    parser.add_argument('--preload', type=str, default=config['preload'])
+    parser.add_argument('--tokenizer_file', type=str, default=config['tokenizer_file'])
+
+    # Update default configuration with command line arguments
+    args = parser.parse_args()
+    config.update(vars(args))
+
+    # Print configuration
+    print("Configuration:")
+    for key, value in config.items():
+        print(f"{key:>20}: {value}")
 
     wandb.init(
         # set the wandb project where this run will be logged
