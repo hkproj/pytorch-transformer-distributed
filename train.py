@@ -28,10 +28,6 @@ from model import build_transformer
 from dataset import BilingualDataset, causal_mask
 from config import get_config, get_weights_file_path
 
-def ddp_setup():
-    init_process_group(backend='nccl')
-    torch.cuda.set_device(int(os.environ['LOCAL_RANK']))
-
 def greedy_decode(model, source, source_mask, tokenizer_src, tokenizer_tgt, max_len, device):
     sos_idx = tokenizer_tgt.token_to_id('[SOS]')
     eos_idx = tokenizer_tgt.token_to_id('[EOS]')
@@ -306,7 +302,8 @@ if __name__ == '__main__':
         print(f"{key:>20}: {value}")
 
     # Setup distributed training
-    ddp_setup()
+    init_process_group(backend='nccl')
+    torch.cuda.set_device(config['local_rank'])
 
     # Only initialize on the rank 0 node
     if config['global_rank'] == 0:
