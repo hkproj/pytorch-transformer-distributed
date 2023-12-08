@@ -255,6 +255,9 @@ def train_model(config):
         torch.cuda.empty_cache()
         model.train()
         batch_iterator = tqdm(train_dataloader, desc=f"Processing Epoch {epoch:02d} on rank {config['global_rank']}")
+        if config['local_rank'] != 0:
+            batch_iterator.disable = True
+
         for batch in batch_iterator:
 
             encoder_input = batch['encoder_input'].to(device) # (b, seq_len)
