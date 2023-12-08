@@ -12,6 +12,8 @@ Distributed training of an attention model. Forked from: [hkproj/pytorch-transfo
 
 ### Setup
 
+Login on each machine and perform the following operations:
+
 1. `sudo apt-get update`
 2. `sudo apt-get install net-tools`
 3. If you get an error about `seahorse` while installing `net-tools`, do the following:
@@ -38,6 +40,8 @@ Distributed training of an attention model. Forked from: [hkproj/pytorch-transfo
 11. Run the training command from below
 
 ### Local training
+
+Run the following command on any machine. Make sure to not run it on both, otherwise they will end up overwriting each other's checkpoints.
 
 `torchrun --nproc_per_node=2 --nnodes=1 --rdzv_id=456 --rdzv_backend=c10d --rdzv_endpoint=127.0.0.1:48123 train.py --batch_size 8 --model_folder "/mnt/training-data/weights"`
 
