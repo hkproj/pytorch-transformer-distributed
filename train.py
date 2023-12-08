@@ -262,7 +262,7 @@ if __name__ == '__main__':
 
     wandb.init(
         # set the wandb project where this run will be logged
-        project="pytorch-transformer",
+        project="pytorch-transformer-distributed",
         
         # track hyperparameters and run metadata
         config=config
