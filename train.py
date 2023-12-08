@@ -145,6 +145,7 @@ def get_ds(config):
     ds_raw = load_dataset('opus_books', f"{config['lang_src']}-{config['lang_tgt']}", split='train')
 
     # Build tokenizers
+    print("Loading tokenizers...")
     tokenizer_src = get_or_build_tokenizer(config, ds_raw, config['lang_src'])
     tokenizer_tgt = get_or_build_tokenizer(config, ds_raw, config['lang_tgt'])
 
@@ -188,6 +189,8 @@ def train_model(config):
     # Make sure the weights folder exists
     Path(config['model_folder']).mkdir(parents=True, exist_ok=True)
 
+    # Load the dataset
+    print("Loading dataset...")
     train_dataloader, val_dataloader, tokenizer_src, tokenizer_tgt = get_ds(config)
     model = get_model(config, tokenizer_src.get_vocab_size(), tokenizer_tgt.get_vocab_size()).to(device)
 
@@ -284,7 +287,7 @@ def train_model(config):
             run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config['seq_len'], device, lambda msg: batch_iterator.write(msg), global_step)
 
             # Save the model at the end of every epoch
-            model_filename = get_weights_file_path(config, f"{epoch:02d}")
+            model_filename = get_weights_file_path(config, epoch)
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.module.state_dict(), # Need to access module because we are using DDP
