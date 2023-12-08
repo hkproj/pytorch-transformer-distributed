@@ -26,7 +26,7 @@ import torchmetrics
 
 from model import build_transformer
 from dataset import BilingualDataset, causal_mask
-from config import get_config, get_weights_file_path
+from config import get_config, get_weights_file_path, get_latest_weights_file_path
 
 def greedy_decode(model, source, source_mask, tokenizer_src, tokenizer_tgt, max_len, device):
     sos_idx = tokenizer_tgt.token_to_id('[SOS]')
@@ -196,15 +196,38 @@ def train_model(config):
     # If the user specified a model to preload before training, load it
     initial_epoch = 0
     global_step = 0
-    if config['preload']:
-        model_filename = get_weights_file_path(config, config['preload'])
-        print(f'Preloading model {model_filename}')
-        state = torch.load(model_filename)
-        model.load_state_dict(state['model_state_dict'])
-        initial_epoch = state['epoch'] + 1
-        optimizer.load_state_dict(state['optimizer_state_dict'])
-        global_step = state['global_step']
-        del state
+    wandb_run_id = None
+    if config['preload'] != '':
+
+        if config['preload'] == 'latest':
+            model_filename = get_latest_weights_file_path(config)
+        else:
+            model_filename = get_weights_file_path(config, int(config['preload']))
+
+        # If we couldn't find a model to preload, just start from scratch
+        if model_filename is not None:
+            print(f'Preloading model {model_filename}')
+            state = torch.load(model_filename)
+            model.load_state_dict(state['model_state_dict'])
+            initial_epoch = state['epoch'] + 1
+            optimizer.load_state_dict(state['optimizer_state_dict'])
+            global_step = state['global_step']
+            wandb_run_id = state['wandb_run_id']
+            del state
+        else:
+            print(f'Could not find model to preload: {config["preload"]}. Starting from scratch')
+
+    # Only initialize W&B on the rank 0 node
+    if config['global_rank'] == 0:
+        wandb.init(
+            # set the wandb project where this run will be logged
+            project="pytorch-transformer-distributed",
+            # allow resuming existing run with the same name (in case the rank 0 node crashed)
+            id=wandb_run_id,
+            resume="allow",
+            # track hyperparameters and run metadata
+            config=config
+        )
 
     # Convert the model to DistributedDataParallel
     # Here we can also specify the bucket_cap_mb parameter to control the size of the buckets
@@ -266,7 +289,8 @@ def train_model(config):
                 'epoch': epoch,
                 'model_state_dict': model.module.state_dict(), # Need to access module because we are using DDP
                 'optimizer_state_dict': optimizer.state_dict(),
-                'global_step': global_step
+                'global_step': global_step,
+                'wandb_run_id': wandb.run.id # Save to resume logging data
             }, model_filename)
 
 
@@ -304,15 +328,6 @@ if __name__ == '__main__':
     # Setup distributed training
     init_process_group(backend='nccl')
     torch.cuda.set_device(config['local_rank'])
-
-    # Only initialize on the rank 0 node
-    if config['global_rank'] == 0:
-        wandb.init(
-            # set the wandb project where this run will be logged
-            project="pytorch-transformer-distributed",
-            # track hyperparameters and run metadata
-            config=config
-        )
     
     # Train the model
     train_model(config)
