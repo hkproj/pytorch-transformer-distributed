@@ -2,6 +2,12 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, random_split
 
+# Distributed training
+import torch.multiprocessing as mp
+from torch.utils.data.distributed import DistributedSampler
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.distributed import init_process_group, destroy_process_group
+
 import warnings
 from tqdm import tqdm
 import os
@@ -22,12 +28,16 @@ from model import build_transformer
 from dataset import BilingualDataset, causal_mask
 from config import get_config, get_weights_file_path
 
+def ddp_setup():
+    init_process_group(backend='nccl')
+    torch.cuda.set_device(int(os.environ['LOCAL_RANK']))
+
 def greedy_decode(model, source, source_mask, tokenizer_src, tokenizer_tgt, max_len, device):
     sos_idx = tokenizer_tgt.token_to_id('[SOS]')
     eos_idx = tokenizer_tgt.token_to_id('[EOS]')
 
     # Precompute the encoder output and reuse it for every step
-    encoder_output = model.encode(source, source_mask)
+    encoder_output = model.module.encode(source, source_mask)
     # Initialize the decoder input with the sos token
     decoder_input = torch.empty(1, 1).fill_(sos_idx).type_as(source).to(device)
     while True:
@@ -38,10 +48,10 @@ def greedy_decode(model, source, source_mask, tokenizer_src, tokenizer_tgt, max_
         decoder_mask = causal_mask(decoder_input.size(1)).type_as(source_mask).to(device)
 
         # calculate output
-        out = model.decode(encoder_output, source_mask, decoder_input, decoder_mask)
+        out = model.module.decode(encoder_output, source_mask, decoder_input, decoder_mask)
 
         # get next token
-        prob = model.project(out[:, -1])
+        prob = model.module.project(out[:, -1])
         _, next_word = torch.max(prob, dim=1)
         decoder_input = torch.cat(
             [decoder_input, torch.empty(1, 1).type_as(source).fill_(next_word.item()).to(device)], dim=1
@@ -164,8 +174,8 @@ def get_ds(config):
     print(f'Max length of target sentence: {max_len_tgt}')
     
 
-    train_dataloader = DataLoader(train_ds, batch_size=config['batch_size'], shuffle=True)
-    val_dataloader = DataLoader(val_ds, batch_size=1, shuffle=True)
+    train_dataloader = DataLoader(train_ds, batch_size=config['batch_size'], pin_memory=True, shuffle=False, sampler=DistributedSampler(train_ds))
+    val_dataloader = DataLoader(val_ds, batch_size=1, shuffle=False, pin_memory=True, sampler=DistributedSampler(val_ds))
 
     return train_dataloader, val_dataloader, tokenizer_src, tokenizer_tgt
 
@@ -175,7 +185,8 @@ def get_model(config, vocab_src_len, vocab_tgt_len):
 
 def train_model(config):
     # Define the device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    assert torch.cuda.is_available(), "Training on CPU is not supported"
+    device = torch.device("cuda")
     print("Using device:", device)
 
     # Make sure the weights folder exists
@@ -199,18 +210,23 @@ def train_model(config):
         global_step = state['global_step']
         del state
 
+    # Convert the model to DistributedDataParallel
+    # Here we can also specify the bucket_cap_mb parameter to control the size of the buckets
+    model = DDP(model, device_ids=[config['local_rank']])
+
     loss_fn = nn.CrossEntropyLoss(ignore_index=tokenizer_src.token_to_id('[PAD]'), label_smoothing=0.1).to(device)
 
-    # define our custom x axis metric
-    wandb.define_metric("global_step")
-    # define which metrics will be plotted against it
-    wandb.define_metric("validation/*", step_metric="global_step")
-    wandb.define_metric("train/*", step_metric="global_step")
+    if config['global_rank'] == 0:
+        # define our custom x axis metric
+        wandb.define_metric("global_step")
+        # define which metrics will be plotted against it
+        wandb.define_metric("validation/*", step_metric="global_step")
+        wandb.define_metric("train/*", step_metric="global_step")
 
     for epoch in range(initial_epoch, config['num_epochs']):
         torch.cuda.empty_cache()
         model.train()
-        batch_iterator = tqdm(train_dataloader, desc=f"Processing Epoch {epoch:02d}")
+        batch_iterator = tqdm(train_dataloader, desc=f"Processing Epoch {epoch:02d} on rank {config['global_rank']}")
         for batch in batch_iterator:
 
             encoder_input = batch['encoder_input'].to(device) # (b, seq_len)
@@ -219,9 +235,9 @@ def train_model(config):
             decoder_mask = batch['decoder_mask'].to(device) # (B, 1, seq_len, seq_len)
 
             # Run the tensors through the encoder, decoder and the projection layer
-            encoder_output = model.encode(encoder_input, encoder_mask) # (B, seq_len, d_model)
-            decoder_output = model.decode(encoder_output, encoder_mask, decoder_input, decoder_mask) # (B, seq_len, d_model)
-            proj_output = model.project(decoder_output) # (B, seq_len, vocab_size)
+            encoder_output = model.module.encode(encoder_input, encoder_mask) # (B, seq_len, d_model)
+            decoder_output = model.module.decode(encoder_output, encoder_mask, decoder_input, decoder_mask) # (B, seq_len, d_model)
+            proj_output = model.module.project(decoder_output) # (B, seq_len, vocab_size)
 
             # Compare the output with the label
             label = batch['label'].to(device) # (B, seq_len)
@@ -229,9 +245,10 @@ def train_model(config):
             # Compute the loss using a simple cross entropy
             loss = loss_fn(proj_output.view(-1, tokenizer_tgt.get_vocab_size()), label.view(-1))
             batch_iterator.set_postfix({"loss": f"{loss.item():6.3f}"})
-
-            # Log the loss
-            wandb.log({'train/loss': loss.item(), 'global_step': global_step})
+        
+            if config['global_rank'] == 0:
+                # Log the loss
+                wandb.log({'train/loss': loss.item(), 'global_step': global_step})
 
             # Backpropagate the loss
             loss.backward()
@@ -242,17 +259,19 @@ def train_model(config):
 
             global_step += 1
 
-        # Run validation at the end of every epoch
-        run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config['seq_len'], device, lambda msg: batch_iterator.write(msg), global_step)
+        # Only run validation and checkpoint saving on the rank 0 node
+        if config['global_rank'] == 0:
+            # Run validation at the end of every epoch
+            run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config['seq_len'], device, lambda msg: batch_iterator.write(msg), global_step)
 
-        # Save the model at the end of every epoch
-        model_filename = get_weights_file_path(config, f"{epoch:02d}")
-        torch.save({
-            'epoch': epoch,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'global_step': global_step
-        }, model_filename)
+            # Save the model at the end of every epoch
+            model_filename = get_weights_file_path(config, f"{epoch:02d}")
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.module.state_dict(), # Need to access module because we are using DDP
+                'optimizer_state_dict': optimizer.state_dict(),
+                'global_step': global_step
+            }, model_filename)
 
 
 if __name__ == '__main__':
@@ -261,7 +280,6 @@ if __name__ == '__main__':
 
     # Read command line arguments and overwrite config accordingly
     parser = argparse.ArgumentParser()
-
     parser.add_argument('--batch_size', type=int, default=config['batch_size'])
     parser.add_argument('--num_epochs', type=int, default=config['num_epochs'])
     parser.add_argument('--lr', type=float, default=config['lr'])
@@ -278,17 +296,29 @@ if __name__ == '__main__':
     args = parser.parse_args()
     config.update(vars(args))
 
+    # Add local rank and global rank to the config
+    config['local_rank'] = int(os.environ['LOCAL_RANK'])
+    config['global_rank'] = int(os.environ['RANK'])
+
     # Print configuration
     print("Configuration:")
     for key, value in config.items():
         print(f"{key:>20}: {value}")
 
-    wandb.init(
-        # set the wandb project where this run will be logged
-        project="pytorch-transformer-distributed",
-        
-        # track hyperparameters and run metadata
-        config=config
-    )
+    # Setup distributed training
+    ddp_setup()
+
+    # Only initialize on the rank 0 node
+    if config['global_rank'] == 0:
+        wandb.init(
+            # set the wandb project where this run will be logged
+            project="pytorch-transformer-distributed",
+            # track hyperparameters and run metadata
+            config=config
+        )
     
+    # Train the model
     train_model(config)
+
+    # Clean up distributed training
+    destroy_process_group()
