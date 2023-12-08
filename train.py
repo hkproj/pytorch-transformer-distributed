@@ -145,7 +145,8 @@ def get_ds(config):
     ds_raw = load_dataset('opus_books', f"{config['lang_src']}-{config['lang_tgt']}", split='train')
 
     # Build tokenizers
-    print("Loading tokenizers...")
+    if config['local_rank'] == 0:
+        print("Loading tokenizers...")
     tokenizer_src = get_or_build_tokenizer(config, ds_raw, config['lang_src'])
     tokenizer_tgt = get_or_build_tokenizer(config, ds_raw, config['lang_tgt'])
 
@@ -167,8 +168,9 @@ def get_ds(config):
         max_len_src = max(max_len_src, len(src_ids))
         max_len_tgt = max(max_len_tgt, len(tgt_ids))
 
-    print(f'Max length of source sentence: {max_len_src}')
-    print(f'Max length of target sentence: {max_len_tgt}')
+    if config['local_rank'] == 0:
+        print(f'Max length of source sentence: {max_len_src}')
+        print(f'Max length of target sentence: {max_len_tgt}')
     
 
     train_dataloader = DataLoader(train_ds, batch_size=config['batch_size'], shuffle=False, sampler=DistributedSampler(train_ds, shuffle=True))
@@ -184,13 +186,15 @@ def train_model(config):
     # Define the device
     assert torch.cuda.is_available(), "Training on CPU is not supported"
     device = torch.device("cuda")
-    print("Using device:", device)
+    if config['local_rank'] == 0:
+        print("Using device:", device)
 
     # Make sure the weights folder exists
     Path(config['model_folder']).mkdir(parents=True, exist_ok=True)
 
     # Load the dataset
-    print("Loading dataset...")
+    if config['local_rank'] == 0:
+        print("Loading dataset...")
     train_dataloader, val_dataloader, tokenizer_src, tokenizer_tgt = get_ds(config)
     model = get_model(config, tokenizer_src.get_vocab_size(), tokenizer_tgt.get_vocab_size()).to(device)
 
@@ -209,7 +213,8 @@ def train_model(config):
 
         # If we couldn't find a model to preload, just start from scratch
         if model_filename is not None:
-            print(f'Preloading model {model_filename}')
+            if config['local_rank'] == 0:
+                print(f'Preloading model {model_filename}')
             state = torch.load(model_filename)
             model.load_state_dict(state['model_state_dict'])
             initial_epoch = state['epoch'] + 1
@@ -218,7 +223,8 @@ def train_model(config):
             wandb_run_id = state['wandb_run_id']
             del state
         else:
-            print(f'Could not find model to preload: {config["preload"]}. Starting from scratch')
+            if config['local_rank'] == 0:
+                print(f'Could not find model to preload: {config["preload"]}. Starting from scratch')
 
     # Only initialize W&B on the rank 0 node
     if config['global_rank'] == 0:
@@ -324,9 +330,10 @@ if __name__ == '__main__':
     config['global_rank'] = int(os.environ['RANK'])
 
     # Print configuration
-    print("Configuration:")
-    for key, value in config.items():
-        print(f"{key:>20}: {value}")
+    if config['local_rank'] == 0:
+        print("Configuration:")
+        for key, value in config.items():
+            print(f"{key:>20}: {value}")
 
     # Setup distributed training
     init_process_group(backend='nccl')
