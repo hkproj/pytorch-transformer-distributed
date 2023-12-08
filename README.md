@@ -6,6 +6,8 @@ Distributed training of an attention model. Forked from: [hkproj/pytorch-transfo
 
 ### Machines
 
+Make sure to create everything in the same region. I used `East Coast (NY2)`.
+
 1. Create 1x Private network. Assign both computers to the private network when creating the machines.
 2. Create 2x nodes of `P4000x2` (multi-GPU) with `ML-in-a-Box` as operating system
 3. Create 1 Network drive (250 GB)
