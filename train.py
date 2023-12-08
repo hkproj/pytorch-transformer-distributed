@@ -174,8 +174,8 @@ def get_ds(config):
     print(f'Max length of target sentence: {max_len_tgt}')
     
 
-    train_dataloader = DataLoader(train_ds, batch_size=config['batch_size'], pin_memory=True, shuffle=False, sampler=DistributedSampler(train_ds))
-    val_dataloader = DataLoader(val_ds, batch_size=1, shuffle=False, pin_memory=True, sampler=DistributedSampler(val_ds))
+    train_dataloader = DataLoader(train_ds, batch_size=config['batch_size'], pin_memory=True, shuffle=False, sampler=DistributedSampler(train_ds, shuffle=True))
+    val_dataloader = DataLoader(val_ds, batch_size=1, shuffle=False, pin_memory=True, sampler=DistributedSampler(val_ds, shuffle=True))
 
     return train_dataloader, val_dataloader, tokenizer_src, tokenizer_tgt
 
