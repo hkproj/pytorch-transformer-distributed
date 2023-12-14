@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import Dataset, DataLoader, random_split
 
 # Distributed training
 from torch.utils.data.distributed import DistributedSampler
@@ -25,9 +25,9 @@ import torchmetrics
 
 from model import build_transformer
 from dataset import BilingualDataset, causal_mask
-from config import get_default_config, get_weights_file_path, get_latest_weights_file_path
+from config import get_default_config, get_weights_file_path, get_latest_weights_file_path, ModelConfig
 
-def greedy_decode(model, source, source_mask, tokenizer_src, tokenizer_tgt, max_len, device):
+def greedy_decode(model: nn.Module, source: torch.Tensor, source_mask: torch.Tensor, tokenizer_src: Tokenizer, tokenizer_tgt: Tokenizer, max_len: int, device: torch.device):
     sos_idx = tokenizer_tgt.token_to_id('[SOS]')
     eos_idx = tokenizer_tgt.token_to_id('[EOS]')
 
@@ -58,7 +58,7 @@ def greedy_decode(model, source, source_mask, tokenizer_src, tokenizer_tgt, max_
     return decoder_input.squeeze(0)
 
 
-def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, device, print_msg, global_step, num_examples=2):
+def run_validation(model: nn.Module, validation_ds: DataLoader, tokenizer_src: Tokenizer, tokenizer_tgt: Tokenizer, max_len: int, device: torch.device, print_msg: callable, global_step: int, num_examples: int = 2):
     model.eval()
     count = 0
 
@@ -122,11 +122,11 @@ def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, 
     bleu = metric(predicted, expected)
     wandb.log({'validation/BLEU': bleu, 'global_step': global_step})
 
-def get_all_sentences(ds, lang):
+def get_all_sentences(ds: Dataset, lang: str):
     for item in ds:
         yield item['translation'][lang]
 
-def get_or_build_tokenizer(config, ds, lang):
+def get_or_build_tokenizer(config: ModelConfig, ds: Dataset, lang: str) -> Tokenizer:
     tokenizer_path = Path(config.tokenizer_file.format(lang))
     if not Path.exists(tokenizer_path):
         # Most code taken from: https://huggingface.co/docs/tokenizers/quicktour
@@ -139,7 +139,7 @@ def get_or_build_tokenizer(config, ds, lang):
         tokenizer = Tokenizer.from_file(str(tokenizer_path))
     return tokenizer
 
-def get_ds(config):
+def get_ds(config: ModelConfig):
     # It only has the train split, so we divide it overselves
     ds_raw = load_dataset('opus_books', f"{config.lang_src}-{config.lang_tgt}", split='train')
 
@@ -177,11 +177,11 @@ def get_ds(config):
 
     return train_dataloader, val_dataloader, tokenizer_src, tokenizer_tgt
 
-def get_model(config, vocab_src_len, vocab_tgt_len):
+def get_model(config: ModelConfig, vocab_src_len: int, vocab_tgt_len: int):
     model = build_transformer(vocab_src_len, vocab_tgt_len, config.seq_len, config.seq_len, d_model=config.d_model)
     return model
 
-def train_model(config):
+def train_model(config: ModelConfig):
     # Define the device
     assert torch.cuda.is_available(), "Training on CPU is not supported"
     device = torch.device("cuda")
@@ -324,9 +324,9 @@ if __name__ == '__main__':
     parser.add_argument('--model_basename', type=str, default=config.model_basename)
     parser.add_argument('--preload', type=str, default=config.preload)
     parser.add_argument('--tokenizer_file', type=str, default=config.tokenizer_file)
+    args = parser.parse_args()
 
     # Update default configuration with command line arguments
-    args = parser.parse_args()
     config.__dict__.update(vars(args))
 
     # Add local rank and global rank to the config

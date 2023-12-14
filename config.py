@@ -4,19 +4,19 @@ from dataclasses import dataclass
 @dataclass
 class ModelConfig:
 
-    batch_size: int
-    num_epochs: int
-    lr: float
-    seq_len: int
-    d_model: int
-    lang_src: str
-    lang_tgt: str
-    model_folder: str
-    model_basename: str
-    preload: str
-    tokenizer_file: str
-    local_rank: int = -1
-    global_rank: int = -1
+    batch_size: int # Batch size
+    num_epochs: int # Number of epochs to train
+    lr: float # Learning rate
+    seq_len: int # Sequence length
+    d_model: int # Size of the embedding vector
+    lang_src: str # Source language
+    lang_tgt: str # Target language
+    model_folder: str # Folder where to save the checkpoints
+    model_basename: str # Basename of the checkpoint files
+    preload: str # Preload weights from a previous checkpoint
+    tokenizer_file: str # Path where to save the tokenizer
+    local_rank: int = -1 # LOCAL_RANK assigned by torchrun
+    global_rank: int = -1 # RANK assigned by torchrun
 
 def get_default_config() -> ModelConfig:
 
@@ -34,13 +34,13 @@ def get_default_config() -> ModelConfig:
         tokenizer_file="tokenizer_{0}.json",
     )
 
-def get_weights_file_path(config, epoch: str) -> str:
+def get_weights_file_path(config: ModelConfig, epoch: str) -> str:
     model_folder = config.model_folder
     model_basename = config.model_basename
     model_filename = model_basename.format(epoch)
     return str(Path('.') / model_folder / model_filename)
 
-def get_latest_weights_file_path(config) -> str:
+def get_latest_weights_file_path(config: ModelConfig) -> str:
     model_folder = config.model_folder
     model_basename = config.model_basename
     # Check all files in the model folder
