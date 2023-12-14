@@ -3,9 +3,8 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, random_split
 
 # Distributed training
-import torch.multiprocessing as mp
 from torch.utils.data.distributed import DistributedSampler
-from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.nn.parallel import DistributedDataParallel
 from torch.distributed import init_process_group, destroy_process_group
 
 import warnings
@@ -26,7 +25,7 @@ import torchmetrics
 
 from model import build_transformer
 from dataset import BilingualDataset, causal_mask
-from config import get_config, get_weights_file_path, get_latest_weights_file_path
+from config import get_default_config, get_weights_file_path, get_latest_weights_file_path
 
 def greedy_decode(model, source, source_mask, tokenizer_src, tokenizer_tgt, max_len, device):
     sos_idx = tokenizer_tgt.token_to_id('[SOS]')
@@ -128,7 +127,7 @@ def get_all_sentences(ds, lang):
         yield item['translation'][lang]
 
 def get_or_build_tokenizer(config, ds, lang):
-    tokenizer_path = Path(config['tokenizer_file'].format(lang))
+    tokenizer_path = Path(config.tokenizer_file.format(lang))
     if not Path.exists(tokenizer_path):
         # Most code taken from: https://huggingface.co/docs/tokenizers/quicktour
         tokenizer = Tokenizer(WordLevel(unk_token="[UNK]"))
@@ -142,78 +141,79 @@ def get_or_build_tokenizer(config, ds, lang):
 
 def get_ds(config):
     # It only has the train split, so we divide it overselves
-    ds_raw = load_dataset('opus_books', f"{config['lang_src']}-{config['lang_tgt']}", split='train')
+    ds_raw = load_dataset('opus_books', f"{config.lang_src}-{config.lang_tgt}", split='train')
 
     # Build tokenizers
-    if config['local_rank'] == 0:
+    if config.local_rank == 0:
         print("Loading tokenizers...")
-    tokenizer_src = get_or_build_tokenizer(config, ds_raw, config['lang_src'])
-    tokenizer_tgt = get_or_build_tokenizer(config, ds_raw, config['lang_tgt'])
+    tokenizer_src = get_or_build_tokenizer(config, ds_raw, config.lang_src)
+    tokenizer_tgt = get_or_build_tokenizer(config, ds_raw, config.lang_tgt)
 
     # Keep 90% for training, 10% for validation
     train_ds_size = int(0.9 * len(ds_raw))
     val_ds_size = len(ds_raw) - train_ds_size
     train_ds_raw, val_ds_raw = random_split(ds_raw, [train_ds_size, val_ds_size])
 
-    train_ds = BilingualDataset(train_ds_raw, tokenizer_src, tokenizer_tgt, config['lang_src'], config['lang_tgt'], config['seq_len'])
-    val_ds = BilingualDataset(val_ds_raw, tokenizer_src, tokenizer_tgt, config['lang_src'], config['lang_tgt'], config['seq_len'])
+    train_ds = BilingualDataset(train_ds_raw, tokenizer_src, tokenizer_tgt, config.lang_src, config.lang_tgt, config.seq_len)
+    val_ds = BilingualDataset(val_ds_raw, tokenizer_src, tokenizer_tgt, config.lang_src, config.lang_tgt, config.seq_len)
 
     # Find the maximum length of each sentence in the source and target sentence
     max_len_src = 0
     max_len_tgt = 0
 
     for item in ds_raw:
-        src_ids = tokenizer_src.encode(item['translation'][config['lang_src']]).ids
-        tgt_ids = tokenizer_tgt.encode(item['translation'][config['lang_tgt']]).ids
+        src_ids = tokenizer_src.encode(item['translation'][config.lang_src]).ids
+        tgt_ids = tokenizer_tgt.encode(item['translation'][config.lang_tgt]).ids
         max_len_src = max(max_len_src, len(src_ids))
         max_len_tgt = max(max_len_tgt, len(tgt_ids))
 
-    if config['local_rank'] == 0:
+    if config.local_rank == 0:
         print(f'Max length of source sentence: {max_len_src}')
         print(f'Max length of target sentence: {max_len_tgt}')
     
 
-    train_dataloader = DataLoader(train_ds, batch_size=config['batch_size'], shuffle=False, sampler=DistributedSampler(train_ds, shuffle=True))
+    train_dataloader = DataLoader(train_ds, batch_size=config.batch_size, shuffle=False, sampler=DistributedSampler(train_ds, shuffle=True))
     val_dataloader = DataLoader(val_ds, batch_size=1, shuffle=True)
 
     return train_dataloader, val_dataloader, tokenizer_src, tokenizer_tgt
 
 def get_model(config, vocab_src_len, vocab_tgt_len):
-    model = build_transformer(vocab_src_len, vocab_tgt_len, config["seq_len"], config['seq_len'], d_model=config['d_model'])
+    model = build_transformer(vocab_src_len, vocab_tgt_len, config.seq_len, config.seq_len, d_model=config.d_model)
     return model
 
 def train_model(config):
     # Define the device
     assert torch.cuda.is_available(), "Training on CPU is not supported"
     device = torch.device("cuda")
-    if config['local_rank'] == 0:
+    if config.local_rank == 0:
         print("Using device:", device)
 
     # Make sure the weights folder exists
-    Path(config['model_folder']).mkdir(parents=True, exist_ok=True)
+    Path(config.model_folder).mkdir(parents=True, exist_ok=True)
 
     # Load the dataset
-    if config['local_rank'] == 0:
+    if config.local_rank == 0:
         print("Loading dataset...")
     train_dataloader, val_dataloader, tokenizer_src, tokenizer_tgt = get_ds(config)
     model = get_model(config, tokenizer_src.get_vocab_size(), tokenizer_tgt.get_vocab_size()).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=config['lr'], eps=1e-9)
 
-    # If the user specified a model to preload before training, load it
+    # By default, load the latest checkpoint
     initial_epoch = 0
     global_step = 0
     wandb_run_id = None
-    if config['preload'] != '':
+    if config.preload != '':
 
-        if config['preload'] == 'latest':
+        if config.preload == 'latest':
+            # Get the filename of the latest checkpoint
             model_filename = get_latest_weights_file_path(config)
         else:
-            model_filename = get_weights_file_path(config, int(config['preload']))
+            # In case we want to preload a specific checkpoint
+            model_filename = get_weights_file_path(config, int(config.preload))
 
-        # If we couldn't find a model to preload, just start from scratch
         if model_filename is not None:
-            if config['local_rank'] == 0:
+            if config.local_rank == 0:
                 print(f'Preloading model {model_filename}')
             state = torch.load(model_filename)
             model.load_state_dict(state['model_state_dict'])
@@ -223,11 +223,12 @@ def train_model(config):
             wandb_run_id = state['wandb_run_id']
             del state
         else:
-            if config['local_rank'] == 0:
-                print(f'Could not find model to preload: {config["preload"]}. Starting from scratch')
+            # If we couldn't find a model to preload, just start from scratch
+            if config.local_rank == 0:
+                print(f'Could not find model to preload: {config.preload}. Starting from scratch')
 
-    # Only initialize W&B on the rank 0 node
-    if config['global_rank'] == 0:
+    # Only initialize W&B on the global rank 0 node
+    if config.global_rank == 0:
         wandb.init(
             # set the wandb project where this run will be logged
             project="pytorch-transformer-distributed",
@@ -240,22 +241,22 @@ def train_model(config):
 
     # Convert the model to DistributedDataParallel
     # Here we can also specify the bucket_cap_mb parameter to control the size of the buckets
-    model = DDP(model, device_ids=[config['local_rank']])
+    model = DistributedDataParallel(model, device_ids=[config.local_rank])
 
     loss_fn = nn.CrossEntropyLoss(ignore_index=tokenizer_src.token_to_id('[PAD]'), label_smoothing=0.1).to(device)
 
-    if config['global_rank'] == 0:
+    if config.global_rank == 0:
         # define our custom x axis metric
         wandb.define_metric("global_step")
         # define which metrics will be plotted against it
         wandb.define_metric("validation/*", step_metric="global_step")
         wandb.define_metric("train/*", step_metric="global_step")
 
-    for epoch in range(initial_epoch, config['num_epochs']):
+    for epoch in range(initial_epoch, config.num_epochs):
         torch.cuda.empty_cache()
         model.train()
-        batch_iterator = tqdm(train_dataloader, desc=f"Processing Epoch {epoch:02d} on rank {config['global_rank']}")
-        if config['local_rank'] != 0:
+        batch_iterator = tqdm(train_dataloader, desc=f"Processing Epoch {epoch:02d} on rank {config.global_rank}")
+        if config.local_rank != 0:
             batch_iterator.disable = True
 
         for batch in batch_iterator:
@@ -277,7 +278,7 @@ def train_model(config):
             loss = loss_fn(proj_output.view(-1, tokenizer_tgt.get_vocab_size()), label.view(-1))
             batch_iterator.set_postfix({"loss": f"{loss.item():6.3f}", "global_step": global_step})
         
-            if config['global_rank'] == 0:
+            if config.global_rank == 0:
                 # Log the loss
                 wandb.log({'train/loss': loss.item(), 'global_step': global_step})
 
@@ -291,9 +292,9 @@ def train_model(config):
             global_step += 1
 
         # Only run validation and checkpoint saving on the rank 0 node
-        if config['global_rank'] == 0:
+        if config.global_rank == 0:
             # Run validation at the end of every epoch
-            run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config['seq_len'], device, lambda msg: batch_iterator.write(msg), global_step)
+            run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config.seq_len, device, lambda msg: batch_iterator.write(msg), global_step)
 
             # Save the model at the end of every epoch
             model_filename = get_weights_file_path(config, epoch)
@@ -308,39 +309,42 @@ def train_model(config):
 
 if __name__ == '__main__':
     warnings.filterwarnings("ignore")
-    config = get_config()
+    config = get_default_config()
 
     # Read command line arguments and overwrite config accordingly
     parser = argparse.ArgumentParser()
-    parser.add_argument('--batch_size', type=int, default=config['batch_size'])
-    parser.add_argument('--num_epochs', type=int, default=config['num_epochs'])
-    parser.add_argument('--lr', type=float, default=config['lr'])
-    parser.add_argument('--seq_len', type=int, default=config['seq_len'])
-    parser.add_argument('--d_model', type=int, default=config['d_model'])
-    parser.add_argument('--lang_src', type=str, default=config['lang_src'])
-    parser.add_argument('--lang_tgt', type=str, default=config['lang_tgt'])
-    parser.add_argument('--model_folder', type=str, default=config['model_folder'])
-    parser.add_argument('--model_basename', type=str, default=config['model_basename'])
-    parser.add_argument('--preload', type=str, default=config['preload'])
-    parser.add_argument('--tokenizer_file', type=str, default=config['tokenizer_file'])
+    parser.add_argument('--batch_size', type=int, default=config.batch_size)
+    parser.add_argument('--num_epochs', type=int, default=config.num_epochs)
+    parser.add_argument('--lr', type=float, default=config.lr)
+    parser.add_argument('--seq_len', type=int, default=config.seq_len)
+    parser.add_argument('--d_model', type=int, default=config.d_model)
+    parser.add_argument('--lang_src', type=str, default=config.lang_src)
+    parser.add_argument('--lang_tgt', type=str, default=config.lang_tgt)
+    parser.add_argument('--model_folder', type=str, default=config.model_folder)
+    parser.add_argument('--model_basename', type=str, default=config.model_basename)
+    parser.add_argument('--preload', type=str, default=config.preload)
+    parser.add_argument('--tokenizer_file', type=str, default=config.tokenizer_file)
 
     # Update default configuration with command line arguments
     args = parser.parse_args()
-    config.update(vars(args))
+    config.__dict__.update(vars(args))
 
     # Add local rank and global rank to the config
-    config['local_rank'] = int(os.environ['LOCAL_RANK'])
-    config['global_rank'] = int(os.environ['RANK'])
+    config.local_rank = int(os.environ['LOCAL_RANK'])
+    config.global_rank = int(os.environ['RANK'])
+
+    assert config.local_rank != -1, "LOCAL_RANK environment variable not set"
+    assert config.global_rank != -1, "RANK environment variable not set"
 
     # Print configuration
-    if config['local_rank'] == 0:
+    if config.local_rank == 0:
         print("Configuration:")
-        for key, value in config.items():
+        for key, value in config.__dict__.items():
             print(f"{key:>20}: {value}")
 
     # Setup distributed training
     init_process_group(backend='nccl')
-    torch.cuda.set_device(config['local_rank'])
+    torch.cuda.set_device(config.local_rank)
     
     # Train the model
     train_model(config)
