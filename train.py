@@ -302,6 +302,10 @@ def train_model(config: ModelConfig):
 
 if __name__ == '__main__':
     warnings.filterwarnings("ignore")
+
+    # Disable tokenizers parallelism (this is to avoid deadlocks when creating the tokenizers on multiple GPUs)
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
     config = get_default_config()
 
     # Read command line arguments and overwrite config accordingly
