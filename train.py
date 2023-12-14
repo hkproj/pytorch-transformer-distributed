@@ -144,8 +144,7 @@ def get_ds(config: ModelConfig):
     ds_raw = load_dataset('opus_books', f"{config.lang_src}-{config.lang_tgt}", split='train')
 
     # Build tokenizers
-    if config.local_rank == 0:
-        print("Loading tokenizers...")
+    print(f"GPU {config.local_rank} - Loading tokenizers...")
     tokenizer_src = get_or_build_tokenizer(config, ds_raw, config.lang_src)
     tokenizer_tgt = get_or_build_tokenizer(config, ds_raw, config.lang_tgt)
 
@@ -167,9 +166,8 @@ def get_ds(config: ModelConfig):
         max_len_src = max(max_len_src, len(src_ids))
         max_len_tgt = max(max_len_tgt, len(tgt_ids))
 
-    if config.local_rank == 0:
-        print(f'Max length of source sentence: {max_len_src}')
-        print(f'Max length of target sentence: {max_len_tgt}')
+    print(f'GPU {config.local_rank} - Max length of source sentence: {max_len_src}')
+    print(f'GPU {config.local_rank} - Max length of target sentence: {max_len_tgt}')
     
 
     train_dataloader = DataLoader(train_ds, batch_size=config.batch_size, shuffle=False, sampler=DistributedSampler(train_ds, shuffle=True))
@@ -185,15 +183,13 @@ def train_model(config: ModelConfig):
     # Define the device
     assert torch.cuda.is_available(), "Training on CPU is not supported"
     device = torch.device("cuda")
-    if config.local_rank == 0:
-        print("Using device:", device)
+    print(f"GPU {config.local_rank} - Using device: {device}")
 
     # Make sure the weights folder exists
     Path(config.model_folder).mkdir(parents=True, exist_ok=True)
 
     # Load the dataset
-    if config.local_rank == 0:
-        print("Loading dataset...")
+    print(f"GPU {config.local_rank} - Loading dataset...")
     train_dataloader, val_dataloader, tokenizer_src, tokenizer_tgt = get_ds(config)
     model = get_model(config, tokenizer_src.get_vocab_size(), tokenizer_tgt.get_vocab_size()).to(device)
 
@@ -213,8 +209,7 @@ def train_model(config: ModelConfig):
             model_filename = get_weights_file_path(config, int(config.preload))
 
         if model_filename is not None:
-            if config.local_rank == 0:
-                print(f'Preloading model {model_filename}')
+            print(f'GPU {config.local_rank} - Preloading model {model_filename}')
             state = torch.load(model_filename)
             model.load_state_dict(state['model_state_dict'])
             initial_epoch = state['epoch'] + 1
@@ -224,8 +219,7 @@ def train_model(config: ModelConfig):
             del state
         else:
             # If we couldn't find a model to preload, just start from scratch
-            if config.local_rank == 0:
-                print(f'Could not find model to preload: {config.preload}. Starting from scratch')
+            print(f'GPU {config.local_rank} - Could not find model to preload: {config.preload}. Starting from scratch')
 
     # Only initialize W&B on the global rank 0 node
     if config.global_rank == 0:
@@ -255,12 +249,11 @@ def train_model(config: ModelConfig):
     for epoch in range(initial_epoch, config.num_epochs):
         torch.cuda.empty_cache()
         model.train()
-        batch_iterator = tqdm(train_dataloader, desc=f"Processing Epoch {epoch:02d} on rank {config.global_rank}")
-        if config.local_rank != 0:
-            batch_iterator.disable = True
+
+        # Disable tqdm on all nodes except the rank 0 GPU on each server
+        batch_iterator = tqdm(train_dataloader, desc=f"Processing Epoch {epoch:02d} on rank {config.global_rank}", disable=config.local_rank != 0)
 
         for batch in batch_iterator:
-
             encoder_input = batch['encoder_input'].to(device) # (b, seq_len)
             decoder_input = batch['decoder_input'].to(device) # (B, seq_len)
             encoder_mask = batch['encoder_mask'].to(device) # (B, 1, 1, seq_len)
@@ -336,7 +329,7 @@ if __name__ == '__main__':
     assert config.local_rank != -1, "LOCAL_RANK environment variable not set"
     assert config.global_rank != -1, "RANK environment variable not set"
 
-    # Print configuration
+    # Print configuration (only once per server)
     if config.local_rank == 0:
         print("Configuration:")
         for key, value in config.__dict__.items():
