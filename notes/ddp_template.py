@@ -14,6 +14,8 @@ train_dataset = None
 local_rank = -1
 global_rank = -1
 num_epochs = 100
+step_number = 0
+last_step = False
 
 class MyModel:
     pass
@@ -40,10 +42,15 @@ def train():
 
     for epoch in range(num_epochs):
         for data, labels in data_loader:
-            loss = loss_fn(model(data), labels) # Forward step
-            loss.backward() # Backward step + gradient synchronization
-            optimizer.step() # Update weights
-            optimizer.zero_grad() # Reset gradients to zero
+            if (step_number + 1) % 100 != 0 and not last_step: # Accumulate gradients for 100 steps
+                with model.no_sync(): # Disable gradient synchronization
+                    loss = loss_fn(model(data), labels) # Forward step
+                    loss.backward() # Backward step + gradient ACCUMULATION
+            else:
+                loss = loss_fn(model(data), labels) # Forward step
+                loss.backward() # Backward step + gradient SYNCHRONIZATION
+                optimizer.step() # Update weights
+                optimizer.zero_grad() # Reset gradients to zero
 
             if global_rank == 0:
                 collect_statistics() # W&B, etc.
