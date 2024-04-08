@@ -227,6 +227,7 @@ def train_model(config: ModelConfig):
             # set the wandb project where this run will be logged
             project="pytorch-transformer-distributed",
             # allow resuming existing run with the same name (in case the rank 0 node crashed)
+            name=f"global_rank_{config.global_rank}",
             id=wandb_run_id,
             resume="allow",
             group=config.wandb_group,
