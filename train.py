@@ -261,11 +261,12 @@ def train_model(config: ModelConfig):
             encoder_mask = batch['encoder_mask'].to(device) # (B, 1, 1, seq_len)
             decoder_mask = batch['decoder_mask'].to(device) # (B, 1, seq_len, seq_len)
 
-            # Run the tensors through the encoder, decoder and the projection layer
-            encoder_output = model.module.encode(encoder_input, encoder_mask) # (B, seq_len, d_model)
-            decoder_output = model.module.decode(encoder_output, encoder_mask, decoder_input, decoder_mask) # (B, seq_len, d_model)
-            proj_output = model.module.project(decoder_output) # (B, seq_len, vocab_size)
-
+            # # Run the tensors through the encoder, decoder and the projection layer
+            # encoder_output = model.module.encode(encoder_input, encoder_mask) # (B, seq_len, d_model)
+            # decoder_output = model.module.decode(encoder_output, encoder_mask, decoder_input, decoder_mask) # (B, seq_len, d_model)
+            # proj_output = model.module.project(decoder_output) # (B, seq_len, vocab_size)
+            proj_output = model(encoder_output, encoder_mask, decoder_input, decoder_mask)
+            
             # Compare the output with the label
             label = batch['label'].to(device) # (B, seq_len)
 
