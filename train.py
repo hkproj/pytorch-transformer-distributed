@@ -222,13 +222,14 @@ def train_model(config: ModelConfig):
             print(f'GPU {config.local_rank} - Could not find model to preload: {config.preload}. Starting from scratch')
 
     # Only initialize W&B on the global rank 0 node
-    if config.global_rank == 0:
+    if config.local_rank == 0:
         wandb.init(
             # set the wandb project where this run will be logged
             project="pytorch-transformer-distributed",
             # allow resuming existing run with the same name (in case the rank 0 node crashed)
             id=wandb_run_id,
             resume="allow",
+            group=config.wandb_group,
             # track hyperparameters and run metadata
             config=config
         )
@@ -271,7 +272,7 @@ def train_model(config: ModelConfig):
             loss = loss_fn(proj_output.view(-1, tokenizer_tgt.get_vocab_size()), label.view(-1))
             batch_iterator.set_postfix({"loss": f"{loss.item():6.3f}", "global_step": global_step})
         
-            if config.global_rank == 0:
+            if config.local_rank == 0:
                 # Log the loss
                 wandb.log({'train/loss': loss.item(), 'global_step': global_step})
 
@@ -321,6 +322,7 @@ if __name__ == '__main__':
     parser.add_argument('--model_basename', type=str, default=config.model_basename)
     parser.add_argument('--preload', type=str, default=config.preload)
     parser.add_argument('--tokenizer_file', type=str, default=config.tokenizer_file)
+    parser.add_argument('--wandb_group', type=str, default="exp1")
     args = parser.parse_args()
 
     # Update default configuration with command line arguments
