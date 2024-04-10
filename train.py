@@ -222,13 +222,15 @@ def train_model(config: ModelConfig):
             print(f'GPU {config.local_rank} - Could not find model to preload: {config.preload}. Starting from scratch')
 
     # Only initialize W&B on the global rank 0 node
-    if config.global_rank == 0:
+    if config.local_rank == 0:
         wandb.init(
             # set the wandb project where this run will be logged
             project="pytorch-transformer-distributed",
             # allow resuming existing run with the same name (in case the rank 0 node crashed)
+            name=f"global_rank_{config.global_rank}",
             id=wandb_run_id,
             resume="allow",
+            group=config.wandb_group,
             # track hyperparameters and run metadata
             config=config
         )
@@ -259,10 +261,11 @@ def train_model(config: ModelConfig):
             encoder_mask = batch['encoder_mask'].to(device) # (B, 1, 1, seq_len)
             decoder_mask = batch['decoder_mask'].to(device) # (B, 1, seq_len, seq_len)
 
-            # Run the tensors through the encoder, decoder and the projection layer
-            encoder_output = model.module.encode(encoder_input, encoder_mask) # (B, seq_len, d_model)
-            decoder_output = model.module.decode(encoder_output, encoder_mask, decoder_input, decoder_mask) # (B, seq_len, d_model)
-            proj_output = model.module.project(decoder_output) # (B, seq_len, vocab_size)
+            # # Run the tensors through the encoder, decoder and the projection layer
+            # encoder_output = model.module.encode(encoder_input, encoder_mask) # (B, seq_len, d_model)
+            # decoder_output = model.module.decode(encoder_output, encoder_mask, decoder_input, decoder_mask) # (B, seq_len, d_model)
+            # proj_output = model.module.project(decoder_output) # (B, seq_len, vocab_size)
+            proj_output = model(encoder_input, encoder_mask, decoder_input, decoder_mask)
 
             # Compare the output with the label
             label = batch['label'].to(device) # (B, seq_len)
@@ -271,7 +274,7 @@ def train_model(config: ModelConfig):
             loss = loss_fn(proj_output.view(-1, tokenizer_tgt.get_vocab_size()), label.view(-1))
             batch_iterator.set_postfix({"loss": f"{loss.item():6.3f}", "global_step": global_step})
         
-            if config.global_rank == 0:
+            if config.local_rank == 0:
                 # Log the loss
                 wandb.log({'train/loss': loss.item(), 'global_step': global_step})
 
@@ -321,6 +324,7 @@ if __name__ == '__main__':
     parser.add_argument('--model_basename', type=str, default=config.model_basename)
     parser.add_argument('--preload', type=str, default=config.preload)
     parser.add_argument('--tokenizer_file', type=str, default=config.tokenizer_file)
+    parser.add_argument('--wandb_group', type=str, default="exp1")
     args = parser.parse_args()
 
     # Update default configuration with command line arguments

@@ -222,6 +222,11 @@ class Transformer(nn.Module):
     def project(self, x):
         # (batch, seq_len, vocab_size)
         return self.projection_layer(x)
+
+    def forward(self, encoder_input, encoder_mask, decoder_input, decoder_mask):      
+        encoder_output = self.encode(encoder_input, encoder_mask) # (B, seq_len, d_model)
+        decoder_output = self.decode(encoder_output, encoder_mask, decoder_input, decoder_mask) # (B, seq_len, d_model)
+        return self.project(decoder_output) # (B, seq_len, vocab_size))
     
 def build_transformer(src_vocab_size: int, tgt_vocab_size: int, src_seq_len: int, tgt_seq_len: int, d_model: int=512, N: int=6, h: int=8, dropout: float=0.1, d_ff: int=2048) -> Transformer:
     # Create the embedding layers
